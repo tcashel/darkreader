@@ -1,21 +1,25 @@
 import ConfigManager from './config-manager';
 import DevTools from './devtools';
 import IconManager from './icon-manager';
+import type {ExtensionAdapter} from './messenger';
 import Messenger from './messenger';
 import Newsmaker from './newsmaker';
 import TabManager from './tab-manager';
 import UserStorage from './user-storage';
 import {setWindowTheme, resetWindowTheme} from './window-theme';
-import {getFontList, getCommands, setShortcut} from './utils/extension-api';
-import {isFirefox} from '../utils/platform';
-import {isInTimeInterval} from '../utils/time';
-import {isURLInList, getURLHost} from '../utils/url';
+import {getFontList, getCommands, setShortcut, canInjectScript} from './utils/extension-api';
+import {isInTimeInterval, getDuration, isNightAtLocation} from '../utils/time';
+import {isURLInList, getURLHostOrProtocol, isURLEnabled} from '../utils/url';
 import ThemeEngines from '../generators/theme-engines';
 import createCSSFilterStylesheet from '../generators/css-filter';
 import {getDynamicThemeFixesFor} from '../generators/dynamic-theme';
 import createStaticStylesheet from '../generators/static-theme';
 import {createSVGFilterStylesheet, getSVGFilterMatrixValue, getSVGReverseFilterMatrixValue} from '../generators/svg-filter';
-import {FilterConfig, ExtensionData, Shortcuts, UserSettings} from '../definitions';
+import type {ExtensionData, FilterConfig, News, Shortcuts, UserSettings, TabInfo} from '../definitions';
+import {isSystemDarkModeEnabled} from '../utils/media-query';
+import {isFirefox, isThunderbird} from '../utils/platform';
+
+const AUTO_TIME_CHECK_INTERVAL = getDuration({seconds: 10});
 
 export class Extension {
     ready: boolean;
@@ -36,46 +40,56 @@ export class Extension {
         this.config = new ConfigManager();
         this.devtools = new DevTools(this.config, () => this.onSettingsChanged());
         this.messenger = new Messenger(this.getMessengerAdapter());
-        this.news = new Newsmaker((news) => {
-            const unread = news.filter(({read}) => !read);
-            if (unread.length > 0 && this.user.settings.notifyOfNews) {
-                this.icon.notifyAboutReleaseNotes(unread.length);
-            } else {
-                this.icon.stopNotifyingAboutReleaseNotes();
-            }
-        });
+        this.news = new Newsmaker((news) => this.onNewsUpdate(news));
         this.tabs = new TabManager({
-            getConnectionMessage: (url, frameURL) => {
-                if (this.ready) {
-                    return this.isEnabled() && this.getTabMessage(url, frameURL);
-                } else {
-                    return new Promise((resolve) => {
-                        this.awaiting.push(() => {
-                            resolve(this.isEnabled() && this.getTabMessage(url, frameURL));
-                        });
-                    });
+            getConnectionMessage: ({url, frameURL, unsupportedSender}) => {
+                if (unsupportedSender) {
+                    return this.getUnsupportedSenderMessage();
                 }
-            }
+                return this.getConnectionMessage(url, frameURL);
+            },
+            onColorSchemeChange: this.onColorSchemeChange,
         });
-        this.user = new UserStorage();
+        this.user = new UserStorage({onRemoteSettingsChange: () => this.onRemoteSettingsChange()});
         this.awaiting = [];
     }
 
     isEnabled() {
-        if (this.user.settings.enabled === 'auto') {
+        const {automation} = this.user.settings;
+        if (automation === 'time') {
             const now = new Date();
-            return isInTimeInterval(now, this.user.settings.activationTime, this.user.settings.deactivationTime);
+            return isInTimeInterval(now, this.user.settings.time.activation, this.user.settings.time.deactivation);
+        } else if (automation === 'system') {
+            if (isFirefox) {
+                // BUG: Firefox background page always matches initial color scheme.
+                return this.wasLastColorSchemeDark == null
+                    ? isSystemDarkModeEnabled()
+                    : this.wasLastColorSchemeDark;
+            }
+            return isSystemDarkModeEnabled();
+        } else if (automation === 'location') {
+            const latitude = this.user.settings.location.latitude;
+            const longitude = this.user.settings.location.longitude;
+
+            if (latitude != null && longitude != null) {
+                const now = new Date();
+                return isNightAtLocation(now, latitude, longitude);
+            }
         }
+
         return this.user.settings.enabled;
     }
 
-    private awaiting: (() => void)[];
+    private awaiting: Array<() => void>;
 
     async start() {
         await this.config.load({local: true});
         this.fonts = await getFontList();
 
         await this.user.loadSettings();
+        if (this.user.settings.syncSitesFixes) {
+            await this.config.load({local: false});
+        }
         this.onAppToggle();
         this.changeSettings(this.user.settings);
         console.log('loaded', this.user.settings);
@@ -83,36 +97,43 @@ export class Extension {
         this.registerCommands();
 
         this.ready = true;
-        this.tabs.updateContentScript();
+        if (isThunderbird) {
+            this.tabs.registerMailDisplayScript();
+        } else {
+            this.tabs.updateContentScript({runOnProtectedPages: this.user.settings.enableForProtectedPages});
+        }
 
         this.awaiting.forEach((ready) => ready());
         this.awaiting = null;
 
-        this.config.load({local: false});
+        this.startAutoTimeCheck();
+        this.news.subscribe();
     }
 
     private popupOpeningListener: () => void = null;
 
-    private getMessengerAdapter() {
+    private getMessengerAdapter(): ExtensionAdapter {
         return {
             collect: async () => {
                 if (!this.ready) {
-                    await new Promise((resolve) => this.awaiting.push(resolve));
+                    await new Promise<void>((resolve) => this.awaiting.push(resolve));
                 }
                 return await this.collectData();
             },
             getActiveTabInfo: async () => {
                 if (!this.ready) {
-                    await new Promise((resolve) => this.awaiting.push(resolve));
+                    await new Promise<void>((resolve) => this.awaiting.push(resolve));
                 }
-                return await this.tabs.getActiveTabInfo(this.config);
+                const url = await this.tabs.getActiveTabURL();
+                return this.getURLInfo(url);
             },
             changeSettings: (settings) => this.changeSettings(settings),
             setTheme: (theme) => this.setTheme(theme),
             setShortcut: ({command, shortcut}) => this.setShortcut(command, shortcut),
-            toggleSitePattern: (pattern) => this.toggleSitePattern(pattern),
-            markNewsAsRead: (ids) => this.news.markAsRead(...ids),
+            toggleURL: (url) => this.toggleURL(url),
+            markNewsAsRead: async (ids) => await this.news.markAsRead(...ids),
             onPopupOpen: () => this.popupOpeningListener && this.popupOpeningListener(),
+            loadConfig: async (options) => await this.config.load(options),
             applyDevDynamicThemeFixes: (text) => this.devtools.applyDynamicThemeFixes(text),
             resetDevDynamicThemeFixes: () => this.devtools.resetDynamicThemeFixes(),
             applyDevInversionFixes: (text) => this.devtools.applyInversionFixes(text),
@@ -130,7 +151,10 @@ export class Extension {
         chrome.commands.onCommand.addListener((command) => {
             if (command === 'toggle') {
                 console.log('Toggle command entered');
-                this.changeSettings({enabled: !this.isEnabled()});
+                this.changeSettings({
+                    enabled: !this.isEnabled(),
+                    automation: '',
+                });
             }
             if (command === 'addSite') {
                 console.log('Add Site command entered');
@@ -163,21 +187,101 @@ export class Extension {
             fonts: this.fonts,
             news: this.news.latest,
             shortcuts: await this.getShortcuts(),
-            devDynamicThemeFixesText: this.devtools.getDynamicThemeFixesText(),
-            devInversionFixesText: this.devtools.getInversionFixesText(),
-            devStaticThemesText: this.devtools.getStaticThemesText(),
+            devtools: {
+                dynamicFixesText: this.devtools.getDynamicThemeFixesText(),
+                filterFixesText: this.devtools.getInversionFixesText(),
+                staticThemesText: this.devtools.getStaticThemesText(),
+                hasCustomDynamicFixes: this.devtools.hasCustomDynamicThemeFixes(),
+                hasCustomFilterFixes: this.devtools.hasCustomFilterFixes(),
+                hasCustomStaticFixes: this.devtools.hasCustomStaticFixes(),
+            },
         };
     }
+
+    private onNewsUpdate(news: News[]) {
+        const latestNews = news.length > 0 && news[0];
+        if (latestNews && latestNews.important && !latestNews.read) {
+            this.icon.showImportantBadge();
+            return;
+        }
+
+        const unread = news.filter(({read}) => !read);
+        if (unread.length > 0 && this.user.settings.notifyOfNews) {
+            this.icon.showUnreadReleaseNotesBadge(unread.length);
+            return;
+        }
+
+        this.icon.hideBadge();
+    }
+
+    private getConnectionMessage(url, frameURL) {
+        if (this.ready) {
+            return this.getTabMessage(url, frameURL);
+        } else {
+            return new Promise<{type: string; data?: any}>((resolve) => {
+                this.awaiting.push(() => {
+                    resolve(this.getTabMessage(url, frameURL));
+                });
+            });
+        }
+    }
+
+    private getUnsupportedSenderMessage() {
+        return {type: 'unsupported-sender'};
+    }
+
+    private wasEnabledOnLastCheck: boolean;
+
+    private startAutoTimeCheck() {
+        setInterval(() => {
+            if (!this.ready || this.user.settings.automation === '') {
+                return;
+            }
+            this.handleAutoCheck();
+        }, AUTO_TIME_CHECK_INTERVAL);
+    }
+
+    private wasLastColorSchemeDark = null;
+
+    private onColorSchemeChange = ({isDark}) => {
+        this.wasLastColorSchemeDark = isDark;
+        if (this.user.settings.automation !== 'system') {
+            return;
+        }
+        this.handleAutoCheck();
+    };
+
+    private handleAutoCheck = () => {
+        if (!this.ready) {
+            return;
+        }
+        const isEnabled = this.isEnabled();
+        if (this.wasEnabledOnLastCheck !== isEnabled) {
+            this.wasEnabledOnLastCheck = isEnabled;
+            this.onAppToggle();
+            this.tabs.sendMessage(this.getTabMessage);
+            this.reportChanges();
+        }
+    };
 
     changeSettings($settings: Partial<UserSettings>) {
         const prev = {...this.user.settings};
 
         this.user.set($settings);
 
-        if (prev.enabled !== this.user.settings.enabled) {
+        if (
+            (prev.enabled !== this.user.settings.enabled) ||
+            (prev.automation !== this.user.settings.automation) ||
+            (prev.time.activation !== this.user.settings.time.activation) ||
+            (prev.time.deactivation !== this.user.settings.time.deactivation) ||
+            (prev.location.latitude !== this.user.settings.location.latitude) ||
+            (prev.location.longitude !== this.user.settings.location.longitude)
+        ) {
             this.onAppToggle();
         }
-
+        if (prev.syncSettings !== this.user.settings.syncSettings) {
+            this.user.saveSyncSetting(this.user.settings.syncSettings);
+        }
         if (this.isEnabled() && $settings.changeBrowserTheme != null && prev.changeBrowserTheme !== $settings.changeBrowserTheme) {
             if ($settings.changeBrowserTheme) {
                 setWindowTheme(this.user.settings.theme);
@@ -204,15 +308,23 @@ export class Extension {
         this.messenger.reportChanges(info);
     }
 
-    toggleSitePattern(pattern: string) {
-        const siteList = this.user.settings.siteList.slice();
+    toggleURL(url: string) {
+        const isInDarkList = isURLInList(url, this.config.DARK_SITES);
+        const siteList = isInDarkList ?
+            this.user.settings.siteListEnabled.slice() :
+            this.user.settings.siteList.slice();
+        const pattern = getURLHostOrProtocol(url);
         const index = siteList.indexOf(pattern);
         if (index < 0) {
             siteList.push(pattern);
         } else {
             siteList.splice(index, 1);
         }
-        this.changeSettings({siteList});
+        if (isInDarkList) {
+            this.changeSettings({siteListEnabled: siteList});
+        } else {
+            this.changeSettings({siteList});
+        }
     }
 
     /**
@@ -220,9 +332,8 @@ export class Extension {
      * into Sites List (or removes).
      */
     async toggleCurrentSite() {
-        const {url} = await this.tabs.getActiveTabInfo(this.config);
-        const host = getURLHost(url);
-        this.toggleSitePattern(host);
+        const url = await this.tabs.getActiveTabURL();
+        this.toggleURL(url);
     }
 
 
@@ -250,9 +361,15 @@ export class Extension {
             return;
         }
 
+        this.wasEnabledOnLastCheck = this.isEnabled();
         this.tabs.sendMessage(this.getTabMessage);
         this.saveUserSettings();
         this.reportChanges();
+    }
+
+    private onRemoteSettingsChange() {
+        // TODO: Requires proper handling and more testing
+        // to prevent cycling across instances.
     }
 
 
@@ -262,38 +379,44 @@ export class Extension {
     //
     //----------------------
 
-    private getTabMessage = (url: string, frameURL: string) => {
+    private getURLInfo(url: string): TabInfo {
         const {DARK_SITES} = this.config;
-        const isURLInDarkList = isURLInList(url, DARK_SITES);
-        const isURLInUserList = isURLInList(url, this.user.settings.siteList);
+        const isInDarkList = isURLInList(url, DARK_SITES);
+        const isProtected = !canInjectScript(url);
+        return {
+            url,
+            isInDarkList,
+            isProtected,
+        };
+    }
 
-        if (this.isEnabled() && (
-            (isURLInUserList && this.user.settings.applyToListedOnly) ||
-            (!isURLInDarkList && !this.user.settings.applyToListedOnly && !isURLInUserList)
-        )) {
+    private getTabMessage = (url: string, frameURL: string) => {
+        const urlInfo = this.getURLInfo(url);
+        if (this.isEnabled() && isURLEnabled(url, this.user.settings, urlInfo)) {
             const custom = this.user.settings.customThemes.find(({url: urlList}) => isURLInList(url, urlList));
-            const filterConfig = custom ? custom.theme : this.user.settings.theme;
+            const preset = custom ? null : this.user.settings.presets.find(({urls}) => isURLInList(url, urls));
+            const theme = custom ? custom.theme : preset ? preset.theme : this.user.settings.theme;
 
             console.log(`Creating CSS for url: ${url}`);
-            switch (filterConfig.engine) {
+            switch (theme.engine) {
                 case ThemeEngines.cssFilter: {
                     return {
                         type: 'add-css-filter',
-                        data: createCSSFilterStylesheet(filterConfig, url, frameURL, this.config.INVERSION_FIXES),
+                        data: createCSSFilterStylesheet(theme, url, frameURL, this.config.INVERSION_FIXES),
                     };
                 }
                 case ThemeEngines.svgFilter: {
-                    if (isFirefox()) {
+                    if (isFirefox) {
                         return {
                             type: 'add-css-filter',
-                            data: createSVGFilterStylesheet(filterConfig, url, frameURL, this.config.INVERSION_FIXES),
+                            data: createSVGFilterStylesheet(theme, url, frameURL, this.config.INVERSION_FIXES),
                         };
                     }
                     return {
                         type: 'add-svg-filter',
                         data: {
-                            css: createSVGFilterStylesheet(filterConfig, url, frameURL, this.config.INVERSION_FIXES),
-                            svgMatrix: getSVGFilterMatrixValue(filterConfig),
+                            css: createSVGFilterStylesheet(theme, url, frameURL, this.config.INVERSION_FIXES),
+                            svgMatrix: getSVGFilterMatrixValue(theme),
                             svgReverseMatrix: getSVGReverseFilterMatrixValue(),
                         },
                     };
@@ -301,14 +424,15 @@ export class Extension {
                 case ThemeEngines.staticTheme: {
                     return {
                         type: 'add-static-theme',
-                        data: filterConfig.stylesheet && filterConfig.stylesheet.trim() ?
-                            filterConfig.stylesheet :
-                            createStaticStylesheet(filterConfig, url, frameURL, this.config.STATIC_THEMES),
+                        data: theme.stylesheet && theme.stylesheet.trim() ?
+                            theme.stylesheet :
+                            createStaticStylesheet(theme, url, frameURL, this.config.STATIC_THEMES),
                     };
                 }
                 case ThemeEngines.dynamicTheme: {
-                    const {engine, ...filter} = filterConfig;
-                    const fixes = getDynamicThemeFixesFor(url, frameURL, this.config.DYNAMIC_THEME_FIXES);
+                    const filter = {...theme};
+                    delete filter.engine;
+                    const fixes = getDynamicThemeFixesFor(url, frameURL, this.config.DYNAMIC_THEME_FIXES, this.user.settings.enableForPDF);
                     const isIFrame = frameURL != null;
                     return {
                         type: 'add-dynamic-theme',
@@ -316,12 +440,12 @@ export class Extension {
                     };
                 }
                 default: {
-                    throw new Error(`Unknown engine ${filterConfig.engine}`);
+                    throw new Error(`Unknown engine ${theme.engine}`);
                 }
             }
-        } else {
-            console.log(`Site is not inverted: ${url}`);
         }
+
+        console.log(`Site is not inverted: ${url}`);
         return {
             type: 'clean-up',
         };

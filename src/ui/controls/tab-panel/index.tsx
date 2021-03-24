@@ -1,14 +1,14 @@
-import {html} from 'malevic';
+import {m} from 'malevic';
 import Button from '../button';
 import Tab from './tab';
 
 interface TabPanelProps {
     tabs: {
-        [name: string]: Malevic.NodeDeclaration;
+        [name: string]: Malevic.Child;
     };
     tabLabels: {
         [name: string]: string;
-    },
+    };
     activeTab: string;
     onSwitchTab: (name: string) => void;
 }

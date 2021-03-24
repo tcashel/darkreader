@@ -1,8 +1,11 @@
 module.exports = {
-    getDestDir: function ({production, firefox}) {
-        if (firefox) {
-            return production ? 'build-firefox' : 'debug-firefox';
+    getDestDir: function ({debug, firefox, thunderbird}) {
+        if (thunderbird) {
+            return debug ? 'debug-thunderbird' : 'build-thunderbird';
         }
-        return production ? 'build' : 'debug';
+        if (firefox) {
+            return debug ? 'debug-firefox' : 'build-firefox';
+        }
+        return debug ? 'debug' : 'build' ;
     }
 };

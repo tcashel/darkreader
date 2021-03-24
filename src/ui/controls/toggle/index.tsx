@@ -1,21 +1,22 @@
-import {html} from 'malevic';
+import type {Child} from 'malevic';
+import {m} from 'malevic';
 
 interface ToggleProps {
     checked: boolean;
     class?: string;
-    labelOn: string;
-    labelOff: string;
+    labelOn: Child;
+    labelOff: Child;
     onChange: (checked: boolean) => void;
 }
 
 export default function Toggle(props: ToggleProps) {
     const {checked, onChange} = props;
 
-    const cls = {
-        'toggle': true,
-        'toggle--checked': checked,
-        [props.class]: props.class
-    };
+    const cls = [
+        'toggle',
+        checked ? 'toggle--checked' : null,
+        props.class,
+    ];
 
     const clsOn = {
         'toggle__btn': true,

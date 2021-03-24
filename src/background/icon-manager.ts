@@ -2,7 +2,7 @@ const ICON_PATHS = {
     active_19: '../icons/dr_active_19.png',
     active_38: '../icons/dr_active_38.png',
     inactive_19: '../icons/dr_inactive_19.png',
-    inactive_38: '../icons/dr_inactive_38.png'
+    inactive_38: '../icons/dr_inactive_38.png',
 };
 
 export default class IconManager {
@@ -36,18 +36,17 @@ export default class IconManager {
         });
     }
 
-    notifyAboutReleaseNotes(count: number) {
-        chrome.browserAction.setBadgeBackgroundColor({
-            color: '#e96c4c',
-        });
-        chrome.browserAction.setBadgeText({
-            text: String(count)
-        });
+    showImportantBadge() {
+        chrome.browserAction.setBadgeBackgroundColor({color: '#e96c4c'});
+        chrome.browserAction.setBadgeText({text: '!'});
     }
 
-    stopNotifyingAboutReleaseNotes() {
-        chrome.browserAction.setBadgeText({
-            text: ''
-        });
+    showUnreadReleaseNotesBadge(count: number) {
+        chrome.browserAction.setBadgeBackgroundColor({color: '#e96c4c'});
+        chrome.browserAction.setBadgeText({text: String(count)});
+    }
+
+    hideBadge() {
+        chrome.browserAction.setBadgeText({text: ''});
     }
 }

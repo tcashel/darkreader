@@ -1,8 +1,10 @@
 import {getBlogPostURL} from '../utils/links';
-import {News} from '../definitions';
+import {getDuration} from '../utils/time';
+import type {News} from '../definitions';
+import {readSyncStorage, readLocalStorage, writeSyncStorage, writeLocalStorage} from './utils/extension-api';
 
 export default class Newsmaker {
-    static UPDATE_INTERVAL = 1 * 60 * 60 * 1000;
+    static UPDATE_INTERVAL = getDuration({hours: 4});
 
     latest: News[];
     onUpdate: (news: News[]) => void;
@@ -10,64 +12,76 @@ export default class Newsmaker {
     constructor(onUpdate: (news: News[]) => void) {
         this.latest = [];
         this.onUpdate = onUpdate;
-        this.updateNews();
-        setInterval(() => this.updateNews(), Newsmaker.UPDATE_INTERVAL);
     }
 
-    async updateNews() {
+    subscribe() {
+        this.updateNews();
+        setInterval(async () => await this.updateNews(), Newsmaker.UPDATE_INTERVAL);
+    }
+
+    private async updateNews() {
         const news = await this.getNews();
-        if (news) {
+        if (Array.isArray(news)) {
             this.latest = news;
             this.onUpdate(this.latest);
         }
     }
 
-    async getNews() {
+    private async getReadNews(): Promise<string[]> {
+        const sync = await readSyncStorage({readNews: []});
+        const local = await readLocalStorage({readNews: []});
+        return Array.from(new Set([
+            ...sync ? sync.readNews : [],
+            ...local ? local.readNews : [],
+        ]));
+    }
+
+    private async getNews() {
         try {
-            const response = await fetch(`https://raw.githubusercontent.com/darkreader/darkreader.org/master/src/blog/posts.json?nocache=${Date.now()}`, {cache: 'no-cache'});
+            const response = await fetch(`https://darkreader.github.io/blog/posts.json?date=${(new Date()).toISOString().substring(0, 10)}`, {cache: 'no-cache'});
             const $news = await response.json();
-            return new Promise<News[]>((resolve) => {
-                chrome.storage.sync.get({readNews: []}, ({readNews}) => {
-                    const news = $news.map(({id, date, headline}) => {
-                        const url = getBlogPostURL(id);
-                        const read = this.isRead(id, readNews);
-                        return {id, date, headline, url, read};
-                    });
-                    resolve(news);
-                });
+            const readNews = await this.getReadNews();
+            const news: News[] = $news.map(({id, date, headline, important}) => {
+                const url = getBlogPostURL(id);
+                const read = this.isRead(id, readNews);
+                return {id, date, headline, url, important, read};
             });
+            for (let i = 0; i < news.length; i++) {
+                const date = new Date(news[i].date);
+                if (isNaN(date.getTime())) {
+                    throw new Error(`Unable to parse date ${date}`);
+                }
+            }
+            return news;
         } catch (err) {
             console.error(err);
             return null;
         }
     }
 
-    markAsRead(...ids: string[]) {
-        return new Promise((resolve) => {
-            chrome.storage.sync.get({readNews: []}, ({readNews}) => {
-                const results = readNews.slice();
-                let changed = false;
-                ids.forEach((id) => {
-                    if (readNews.indexOf(id) < 0) {
-                        results.push(id);
-                        changed = true;
-                    }
-                });
-                if (changed) {
-                    this.latest = this.latest.map(({id, date, url, headline}) => {
-                        const read = this.isRead(id, results);
-                        return {id, date, url, headline, read};
-                    });
-                    this.onUpdate(this.latest);
-                    chrome.storage.sync.set({readNews: results}, () => resolve());
-                } else {
-                    resolve();
-                }
-            });
+    async markAsRead(...ids: string[]) {
+        const readNews = await this.getReadNews();
+        const results = readNews.slice();
+        let changed = false;
+        ids.forEach((id) => {
+            if (readNews.indexOf(id) < 0) {
+                results.push(id);
+                changed = true;
+            }
         });
+        if (changed) {
+            this.latest = this.latest.map(({id, date, url, headline, important}) => {
+                const read = this.isRead(id, results);
+                return {id, date, url, headline, important, read};
+            });
+            this.onUpdate(this.latest);
+            const obj = {readNews: results};
+            await writeLocalStorage(obj);
+            await writeSyncStorage(obj);
+        }
     }
 
     isRead(id: string, readNews: string[]) {
-        return readNews.indexOf(id) >= 0 || (id === 'dynamic-theme' && Boolean(localStorage.getItem('darkreader-4-release-notes-shown')));
+        return readNews.includes(id);
     }
 }

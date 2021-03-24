@@ -1,4 +1,4 @@
-import {html} from 'malevic';
+import {m} from 'malevic';
 import Button from '../button';
 import Track from './track';
 import {getLocalMessage} from '../../../utils/locales';
@@ -26,13 +26,14 @@ export default function UpDown(props: UpDownProps) {
     };
 
     function normalize(x: number) {
-        const exp = Math.ceil(Math.log10(props.step));
-        if (exp >= 1) {
+        const s = Math.round(x / props.step) * props.step;
+        const exp = Math.floor(Math.log10(props.step));
+        if (exp >= 0) {
             const m = Math.pow(10, exp);
-            return Math.round(x / m) * m;
+            return Math.round(s / m) * m;
         } else {
             const m = Math.pow(10, -exp);
-            return Math.round(x * m) / m;
+            return Math.round(s * m) / m;
         }
     }
 
@@ -46,6 +47,10 @@ export default function UpDown(props: UpDownProps) {
 
     function onButtonUpClick() {
         props.onChange(clamp(normalize(props.value + props.step)));
+    }
+
+    function onTrackValueChange(trackValue: number) {
+        props.onChange(clamp(normalize(trackValue * (props.max - props.min) + props.min)));
     }
 
     const trackValue = (props.value - props.min) / (props.max - props.min);
@@ -65,6 +70,7 @@ export default function UpDown(props: UpDownProps) {
                 <Track
                     value={trackValue}
                     label={props.name}
+                    onChange={onTrackValueChange}
                 />
                 <Button class={buttonUpCls} onclick={onButtonUpClick} >
                     <span class="updown__icon updown__icon-up"></span>

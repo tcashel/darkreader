@@ -1,11 +1,10 @@
-import {isURLInList} from '../utils/url';
 import {createTextStyle} from './text-style';
 import {formatSitesFixesConfig} from './utils/format';
 import {applyColorMatrix, createFilterMatrix} from './utils/matrix';
 import {parseSitesFixesConfig} from './utils/parse';
 import {parseArray, formatArray} from '../utils/text';
-import {compareURLPatterns} from '../utils/url';
-import {FilterConfig, StaticTheme} from '../definitions';
+import {compareURLPatterns, isURLInList} from '../utils/url';
+import type {FilterConfig, StaticTheme} from '../definitions';
 
 interface ThemeColors {
     [prop: string]: number[];
@@ -100,7 +99,7 @@ function createRuleGen(getSelectors: (siteTheme: StaticTheme) => string[], gener
         selectors.forEach((s, i) => {
             let ln = modifySelector(s);
             if (i < selectors.length - 1) {
-                ln += ','
+                ln += ',';
             } else {
                 ln += ' {';
             }
@@ -168,9 +167,9 @@ const ruleGenerators = [
 
     createRuleGen((t) => t.fadeBg, (t) => [`background-color: ${rgb(t.fadeBg)}`]),
     createRuleGen((t) => t.fadeText, (t) => [`color: ${rgb(t.fadeText)}`]),
-    createRuleGen((t) => t.transparentBg, (t) => ['background-color: transparent']),
-    createRuleGen((t) => t.noImage, (t) => ['background-image: none']),
-    createRuleGen((t) => t.invert, (t) => ['filter: invert(100%) hue-rotate(180deg)']),
+    createRuleGen((t) => t.transparentBg, () => ['background-color: transparent']),
+    createRuleGen((t) => t.noImage, () => ['background-image: none']),
+    createRuleGen((t) => t.invert, () => ['filter: invert(100%) hue-rotate(180deg)']),
 ];
 
 const staticThemeCommands = [
@@ -240,7 +239,7 @@ function camelCaseToUpperCase(text: string) {
 export function formatStaticThemes(staticThemes: StaticTheme[]) {
     const themes = staticThemes.slice().sort((a, b) => compareURLPatterns(a.url[0], b.url[0]));
 
-    return formatSitesFixesConfig(staticThemes, {
+    return formatSitesFixesConfig(themes, {
         props: staticThemeCommands.map(upperCaseToCamelCase),
         getPropCommandName: camelCaseToUpperCase,
         formatPropValue: (prop, value) => {

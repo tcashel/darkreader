@@ -1,41 +1,49 @@
-export function isFirefox() {
-    return navigator.userAgent.indexOf('Firefox') >= 0;
-}
+const userAgent = typeof navigator === 'undefined' ? 'some useragent' : navigator.userAgent.toLowerCase();
+const platform = typeof navigator === 'undefined' ? 'some platform' : navigator.platform.toLowerCase();
 
-export function isVivaldi() {
-    return navigator.userAgent.toLowerCase().indexOf('vivaldi') >= 0;
-}
+export const isChromium = userAgent.includes('chrome') || userAgent.includes('chromium');
+export const isThunderbird = userAgent.includes('thunderbird');
+export const isFirefox = userAgent.includes('firefox') || isThunderbird;
+export const isVivaldi = userAgent.includes('vivaldi');
+export const isYaBrowser = userAgent.includes('yabrowser');
+export const isOpera = userAgent.includes('opr') || userAgent.includes('opera');
+export const isEdge = userAgent.includes('edg');
+export const isSafari = userAgent.includes('safari') && !isChromium;
+export const isWindows = platform.startsWith('win');
+export const isMacOS = platform.startsWith('mac');
+export const isMobile = userAgent.includes('mobile');
+export const isShadowDomSupported = typeof ShadowRoot === 'function';
+export const isMatchMediaChangeEventListenerSupported = (
+    typeof MediaQueryList === 'function' &&
+    typeof MediaQueryList.prototype.addEventListener === 'function'
+);
 
-export function isYaBrowser() {
-    return navigator.userAgent.toLowerCase().indexOf('yabrowser') >= 0;
-}
-
-export function isOpera() {
-    const agent = navigator.userAgent.toLowerCase();
-    return agent.indexOf('opr') >= 0 || agent.indexOf('opera') >= 0;
-}
-
-export function isWindows() {
-    return navigator.platform.toLowerCase().indexOf('win') === 0;
-}
-
-export function isMacOS() {
-    return navigator.platform.toLowerCase().indexOf('mac') === 0;
-}
-
-export function isMobile() {
-    const agent = navigator.userAgent.toLowerCase();
-    return agent.indexOf('mobile') >= 0;
-}
-
-export function getChromeVersion() {
-    const agent = navigator.userAgent.toLowerCase();
-    const m = agent.match(/chrom[e|ium]\/([^ ]+)/);
+export const chromiumVersion = (() => {
+    const m = userAgent.match(/chrom[e|ium]\/([^ ]+)/);
     if (m && m[1]) {
         return m[1];
+    } else {
+        return '';
     }
-    return null;
-}
+})();
+
+export const isDefinedSelectorSupported = (() => {
+    try {
+        document.querySelector(':defined');
+        return true;
+    } catch (err) {
+        return false;
+    }
+})();
+
+export const isCSSStyleSheetConstructorSupported = (() => {
+    try {
+        new CSSStyleSheet();
+        return true;
+    } catch (err) {
+        return false;
+    }
+})();
 
 export function compareChromeVersions($a: string, $b: string) {
     const a = $a.split('.').map((x) => parseInt(x));
@@ -47,3 +55,4 @@ export function compareChromeVersions($a: string, $b: string) {
     }
     return 0;
 }
+

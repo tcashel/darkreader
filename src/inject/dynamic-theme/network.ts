@@ -1,13 +1,14 @@
 interface FetchRequest {
     url: string;
     responseType: 'data-url' | 'text';
+    mimeType?: string;
 }
 
 let counter = 0;
 const resolvers = new Map<number, (data) => void>();
 const rejectors = new Map<number, (error) => void>();
 
-export function bgFetch(request: FetchRequest) {
+export async function bgFetch(request: FetchRequest) {
     return new Promise<string>((resolve, reject) => {
         const id = ++counter;
         resolvers.set(id, resolve);
